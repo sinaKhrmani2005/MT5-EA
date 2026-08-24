@@ -1,26 +1,22 @@
-
 //+------------------------------------------------------------------+
 //|                 XAU M5 Smart Entry EA                            |
 //|                 EMA20 + EMA50 + RSI14 + MACD                    |
 //+------------------------------------------------------------------+
 #property strict
 #property version   "1.00"
-#property description "XAU M5 Smart Entry - checks every new M5 candle"
+#property description "XAU M5 Smart Entry - checks every new candle"
 
 #include <Trade/Trade.mqh>
 
 CTrade trade;
 
-//====================== تنظیمات اصلی ==============================
-
+//--- Inputs
 input double LotSize            = 0.01;
-
 input int    StopLossPoints     = 300;
 input int    TakeProfitPoints   = 600;
 
 input int    FastEMA             = 20;
 input int    SlowEMA             = 50;
-
 input int    RSIPeriod           = 14;
 
 input int    MACDFast            = 12;
@@ -32,95 +28,52 @@ input double RSI_Sell_Level      = 50.0;
 
 input ulong  MagicNumber         = 2026082401;
 
-//====================== اندیکاتورها ================================
-
+//--- Indicator handles
 int hEMA20 = INVALID_HANDLE;
 int hEMA50 = INVALID_HANDLE;
 int hRSI   = INVALID_HANDLE;
 int hMACD  = INVALID_HANDLE;
 
-// آخرین کندل بررسی‌شده
+//--- Last processed candle
 datetime LastBarTime = 0;
 
-
 //+------------------------------------------------------------------+
-//| شروع ربات                                                        |
+//| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // شماره اختصاصی معاملات این ربات
    trade.SetExpertMagicNumber(MagicNumber);
-
-   // حداکثر انحراف قیمت
    trade.SetDeviationInPoints(30);
 
-   // EMA20
-   hEMA20 = iMA(
-      _Symbol,
-      PERIOD_M5,
-      FastEMA,
-      0,
-      MODE_EMA,
-      PRICE_CLOSE
-   );
+   hEMA20 = iMA(_Symbol, PERIOD_M5, FastEMA, 0, MODE_EMA, PRICE_CLOSE);
+   hEMA50 = iMA(_Symbol, PERIOD_M5, SlowEMA, 0, MODE_EMA, PRICE_CLOSE);
+   hRSI   = iRSI(_Symbol, PERIOD_M5, RSIPeriod, PRICE_CLOSE);
+   hMACD  = iMACD(_Symbol, PERIOD_M5, MACDFast, MACDSlow, MACDSignal, PRICE_CLOSE);
 
-   // EMA50
-   hEMA50 = iMA(
-      _Symbol,
-      PERIOD_M5,
-      SlowEMA,
-      0,
-      MODE_EMA,
-      PRICE_CLOSE
-   );
-
-   // RSI14
-   hRSI = iRSI(
-      _Symbol,
-      PERIOD_M5,
-      RSIPeriod,
-      PRICE_CLOSE
-   );
-
-   // MACD
-   hMACD = iMACD(
-      _Symbol,
-      PERIOD_M5,
-      MACDFast,
-      MACDSlow,
-      MACDSignal,
-      PRICE_CLOSE
-   );
-
-   // بررسی ساخته‌شدن اندیکاتورها
-   if(
-      hEMA20 == INVALID_HANDLE ||
+   if(hEMA20 == INVALID_HANDLE ||
       hEMA50 == INVALID_HANDLE ||
       hRSI   == INVALID_HANDLE ||
-      hMACD  == INVALID_HANDLE
-   )
+      hMACD  == INVALID_HANDLE)
    {
-      Print("ERROR | Indicator handles could not be created");
+      Print("ERROR | Failed to create indicator handles");
       return(INIT_FAILED);
    }
 
-   Print("================================================");
+   Print("==================================================");
    Print("XAU M5 Smart Entry INITIALIZED");
    Print("Symbol: ", _Symbol);
    Print("Timeframe: M5");
-   Print("Check: Every NEW candle");
+   Print("Checking every NEW candle");
    Print("Lot: ", LotSize);
-   Print("SL Points: ", StopLossPoints);
-   Print("TP Points: ", TakeProfitPoints);
-   Print("Magic Number: ", MagicNumber);
-   Print("================================================");
+   Print("SL points: ", StopLossPoints);
+   Print("TP points: ", TakeProfitPoints);
+   Print("==================================================");
 
    return(INIT_SUCCEEDED);
 }
 
-
 //+------------------------------------------------------------------+
-//| توقف ربات                                                        |
+//| Expert deinitialization                                          |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
@@ -139,362 +92,185 @@ void OnDeinit(const int reason)
    Print("XAU M5 Smart Entry STOPPED");
 }
 
-
 //+------------------------------------------------------------------+
-//| بررسی کندل جدید                                                  |
+//| Check for new candle                                             |
 //+------------------------------------------------------------------+
 bool IsNewBar()
 {
-   datetime CurrentBarTime = iTime(
-      _Symbol,
-      PERIOD_M5,
-      0
-   );
+   datetime currentBarTime = iTime(_Symbol, PERIOD_M5, 0);
 
-   if(CurrentBarTime <= 0)
-      return(false);
+   if(currentBarTime <= 0)
+      return false;
 
-   // اگر کندل جدید تشکیل شده
-   if(CurrentBarTime != LastBarTime)
+   if(currentBarTime != LastBarTime)
    {
-      LastBarTime = CurrentBarTime;
-
-      return(true);
+      LastBarTime = currentBarTime;
+      return true;
    }
 
-   return(false);
+   return false;
 }
 
-
 //+------------------------------------------------------------------+
-//| تابع اصلی                                                        |
+//| Main tick function                                               |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // فقط با تشکیل کندل جدید بررسی کن
    if(!IsNewBar())
       return;
 
    CheckSignal();
 }
 
-
 //+------------------------------------------------------------------+
-//| بررسی شرایط معامله                                               |
+//| Check trading conditions                                         |
 //+------------------------------------------------------------------+
 void CheckSignal()
 {
-   double EMA20Buffer[3];
-   double EMA50Buffer[3];
+   double ema20[3];
+   double ema50[3];
+   double rsi[3];
+   double macdMain[3];
+   double macdSignal[3];
 
-   double RSIBuffer[3];
+   ArraySetAsSeries(ema20, true);
+   ArraySetAsSeries(ema50, true);
+   ArraySetAsSeries(rsi, true);
+   ArraySetAsSeries(macdMain, true);
+   ArraySetAsSeries(macdSignal, true);
 
-   double MACDMainBuffer[3];
-   double MACDSignalBuffer[3];
-
-   ArraySetAsSeries(EMA20Buffer,true);
-   ArraySetAsSeries(EMA50Buffer,true);
-
-   ArraySetAsSeries(RSIBuffer,true);
-
-   ArraySetAsSeries(MACDMainBuffer,true);
-   ArraySetAsSeries(MACDSignalBuffer,true);
-
-
-   //================ EMA20 =========================================
-
-   if(
-      CopyBuffer(
-         hEMA20,
-         0,
-         0,
-         3,
-         EMA20Buffer
-      ) < 3
-   )
+   if(CopyBuffer(hEMA20, 0, 0, 3, ema20) < 3)
    {
       Print("NO TRADE | EMA20 data unavailable");
       return;
    }
 
-
-   //================ EMA50 =========================================
-
-   if(
-      CopyBuffer(
-         hEMA50,
-         0,
-         0,
-         3,
-         EMA50Buffer
-      ) < 3
-   )
+   if(CopyBuffer(hEMA50, 0, 0, 3, ema50) < 3)
    {
       Print("NO TRADE | EMA50 data unavailable");
       return;
    }
 
-
-   //================ RSI ===========================================
-
-   if(
-      CopyBuffer(
-         hRSI,
-         0,
-         0,
-         3,
-         RSIBuffer
-      ) < 3
-   )
+   if(CopyBuffer(hRSI, 0, 0, 3, rsi) < 3)
    {
       Print("NO TRADE | RSI data unavailable");
       return;
    }
 
-
-   //================ MACD Main =====================================
-
-   if(
-      CopyBuffer(
-         hMACD,
-         0,
-         0,
-         3,
-         MACDMainBuffer
-      ) < 3
-   )
+   if(CopyBuffer(hMACD, 0, 0, 3, macdMain) < 3)
    {
       Print("NO TRADE | MACD main data unavailable");
       return;
    }
 
-
-   //================ MACD Signal ===================================
-
-   if(
-      CopyBuffer(
-         hMACD,
-         1,
-         0,
-         3,
-         MACDSignalBuffer
-      ) < 3
-   )
+   if(CopyBuffer(hMACD, 1, 0, 3, macdSignal) < 3)
    {
       Print("NO TRADE | MACD signal data unavailable");
       return;
    }
 
+   // Use the CLOSED candle (shift 1)
+   double closePrice = iClose(_Symbol, PERIOD_M5, 1);
 
-   //===============================================================
-   // از کندل بسته‌شده قبلی استفاده می‌کنیم
-   //===============================================================
-
-   double ClosePrice = iClose(
-      _Symbol,
-      PERIOD_M5,
-      1
-   );
-
-   double EMA20 = EMA20Buffer[1];
-   double EMA50 = EMA50Buffer[1];
-
-   double RSI = RSIBuffer[1];
-
-   double MACDMain   = MACDMainBuffer[1];
-   double MACDSignal = MACDSignalBuffer[1];
-
-
-   //===============================================================
-   // گزارش کامل در Experts
-   //===============================================================
+   double e20 = ema20[1];
+   double e50 = ema50[1];
+   double r   = rsi[1];
+   double m   = macdMain[1];
+   double ms  = macdSignal[1];
 
    Print(
-      "CHECK | ",
-      "Close=",
-      DoubleToString(ClosePrice,_Digits),
-
-      " | EMA20=",
-      DoubleToString(EMA20,_Digits),
-
-      " | EMA50=",
-      DoubleToString(EMA50,_Digits),
-
-      " | RSI=",
-      DoubleToString(RSI,2),
-
-      " | MACD=",
-      DoubleToString(MACDMain,6),
-
-      " | Signal=",
-      DoubleToString(MACDSignal,6)
+      "CHECK | Close=", DoubleToString(closePrice, _Digits),
+      " EMA20=", DoubleToString(e20, _Digits),
+      " EMA50=", DoubleToString(e50, _Digits),
+      " RSI=", DoubleToString(r, 2),
+      " MACD=", DoubleToString(m, 6),
+      " Signal=", DoubleToString(ms, 6)
    );
 
+   //--- BUY conditions
+   bool buyCondition =
+      (e20 > e50) &&
+      (r > RSI_Buy_Level) &&
+      (m > ms);
 
-   //===============================================================
-   // شرایط BUY
-   //===============================================================
+   //--- SELL conditions
+   bool sellCondition =
+      (e20 < e50) &&
+      (r < RSI_Sell_Level) &&
+      (m < ms);
 
-   bool BuyCondition =
-      (EMA20 > EMA50) &&
-      (RSI > RSI_Buy_Level) &&
-      (MACDMain > MACDSignal);
-
-
-   //===============================================================
-   // شرایط SELL
-   //===============================================================
-
-   bool SellCondition =
-      (EMA20 < EMA50) &&
-      (RSI < RSI_Sell_Level) &&
-      (MACDMain < MACDSignal);
-
-
-   //===============================================================
-   // BUY
-   //===============================================================
-
-   if(BuyCondition)
+   if(buyCondition)
    {
-      Print(
-         "BUY SIGNAL | EMA bullish + RSI bullish + MACD bullish"
-      );
-
+      Print("BUY SIGNAL | Conditions confirmed");
       OpenBuy();
-
       return;
    }
 
-
-   //===============================================================
-   // SELL
-   //===============================================================
-
-   if(SellCondition)
+   if(sellCondition)
    {
-      Print(
-         "SELL SIGNAL | EMA bearish + RSI bearish + MACD bearish"
-      );
-
+      Print("SELL SIGNAL | Conditions confirmed");
       OpenSell();
-
       return;
    }
 
+   //--- No signal
+   string reason = "";
 
-   //===============================================================
-   // بدون سیگنال
-   //===============================================================
-
-   string Reason = "";
-
-   if(EMA20 > EMA50)
-      Reason += "EMA bullish; ";
-
-   else if(EMA20 < EMA50)
-      Reason += "EMA bearish; ";
-
+   if(e20 > e50)
+      reason += "EMA bullish; ";
+   else if(e20 < e50)
+      reason += "EMA bearish; ";
    else
-      Reason += "EMA equal; ";
+      reason += "EMA equal; ";
 
-
-   if(RSI > 50)
-      Reason += "RSI above 50; ";
-
+   if(r > 50)
+      reason += "RSI above 50; ";
    else
-      Reason += "RSI below 50; ";
+      reason += "RSI below 50; ";
 
-
-   if(MACDMain > MACDSignal)
-      Reason += "MACD bullish; ";
-
+   if(m > ms)
+      reason += "MACD bullish; ";
    else
-      Reason += "MACD bearish; ";
+      reason += "MACD bearish; ";
 
-
-   Print(
-      "NO BUY/SELL | reason: ",
-      Reason
-   );
+   Print("NO BUY/SELL | reason: ", reason);
 }
 
-
 //+------------------------------------------------------------------+
-//| باز کردن BUY                                                     |
+//| Open BUY                                                         |
 //+------------------------------------------------------------------+
 void OpenBuy()
 {
-   double AskPrice = SymbolInfoDouble(
-      _Symbol,
-      SYMBOL_ASK
-   );
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   if(AskPrice <= 0)
+   if(ask <= 0)
    {
-      Print("BUY FAILED | Ask price unavailable");
+      Print("BUY ERROR | Ask price unavailable");
       return;
    }
 
+   double sl = ask - StopLossPoints * _Point;
+   double tp = ask + TakeProfitPoints * _Point;
 
-   // محاسبه SL
-   double SL =
-      AskPrice -
-      (StopLossPoints * _Point);
+   sl = NormalizeDouble(sl, _Digits);
+   tp = NormalizeDouble(tp, _Digits);
 
-
-   // محاسبه TP
-   double TP =
-      AskPrice +
-      (TakeProfitPoints * _Point);
-
-
-   SL = NormalizeDouble(
-      SL,
-      _Digits
-   );
-
-   TP = NormalizeDouble(
-      TP,
-      _Digits
-   );
-
-
-   // ارسال BUY
-   bool Result = trade.Buy(
+   bool result = trade.Buy(
       LotSize,
       _Symbol,
       0,
-      SL,
-      TP,
+      sl,
+      tp,
       "XAU M5 Smart Entry BUY"
    );
 
-
-   if(Result)
+   if(result)
    {
       Print(
-         "BUY OPENED | ",
-         "Lot=",
-         LotSize,
-
-         " | Entry=",
-         DoubleToString(
-            AskPrice,
-            _Digits
-         ),
-
-         " | SL=",
-         DoubleToString(
-            SL,
-            _Digits
-         ),
-
-         " | TP=",
-         DoubleToString(
-            TP,
-            _Digits
-         )
+         "BUY OPENED | Lot=", LotSize,
+         " Entry=", DoubleToString(ask, _Digits),
+         " SL=", DoubleToString(sl, _Digits),
+         " TP=", DoubleToString(tp, _Digits)
       );
    }
    else
@@ -502,89 +278,47 @@ void OpenBuy()
       Print(
          "BUY FAILED | Retcode=",
          trade.ResultRetcode(),
-
          " | ",
          trade.ResultRetcodeDescription()
       );
    }
 }
 
-
 //+------------------------------------------------------------------+
-//| باز کردن SELL                                                    |
+//| Open SELL                                                        |
 //+------------------------------------------------------------------+
 void OpenSell()
 {
-   double BidPrice = SymbolInfoDouble(
-      _Symbol,
-      SYMBOL_BID
-   );
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   if(BidPrice <= 0)
+   if(bid <= 0)
    {
-      Print("SELL FAILED | Bid price unavailable");
+      Print("SELL ERROR | Bid price unavailable");
       return;
    }
 
+   double sl = bid + StopLossPoints * _Point;
+   double tp = bid - TakeProfitPoints * _Point;
 
-   // محاسبه SL
-   double SL =
-      BidPrice +
-      (StopLossPoints * _Point);
+   sl = NormalizeDouble(sl, _Digits);
+   tp = NormalizeDouble(tp, _Digits);
 
-
-   // محاسبه TP
-   double TP =
-      BidPrice -
-      (TakeProfitPoints * _Point);
-
-
-   SL = NormalizeDouble(
-      SL,
-      _Digits
-   );
-
-   TP = NormalizeDouble(
-      TP,
-      _Digits
-   );
-
-
-   // ارسال SELL
-   bool Result = trade.Sell(
+   bool result = trade.Sell(
       LotSize,
       _Symbol,
       0,
-      SL,
-      TP,
+      sl,
+      tp,
       "XAU M5 Smart Entry SELL"
    );
 
-
-   if(Result)
+   if(result)
    {
       Print(
-         "SELL OPENED | ",
-         "Lot=",
-         LotSize,
-
-         " | Entry=",
-         DoubleToString(
-            BidPrice,
-            _Digits
-         ),
-
-         " | SL=",
-         DoubleToString(
-            SL,
-            _Digits
-         ),
-
-         " | TP=",
-         DoubleToString(
-            TP,
-            _Digits
-         )
+         "SELL OPENED | Lot=", LotSize,
+         " Entry=", DoubleToString(bid, _Digits),
+         " SL=", DoubleToString(sl, _Digits),
+         " TP=", DoubleToString(tp, _Digits)
       );
    }
    else
@@ -592,11 +326,9 @@ void OpenSell()
       Print(
          "SELL FAILED | Retcode=",
          trade.ResultRetcode(),
-
          " | ",
          trade.ResultRetcodeDescription()
       );
    }
 }
-
 //+------------------------------------------------------------------+
