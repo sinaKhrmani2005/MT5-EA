@@ -1,320 +1,510 @@
 //+------------------------------------------------------------------+
-//| XAUUSD SIGNAL ONLY                                               |
-//| ENTRY -> SLL -> TP                                               |
+//| XAUUSD SIGNAL ONLY - BUY / SELL / SLL / TP                     |
 //| NO AUTOMATIC TRADING                                             |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.00"
+#property version "4.00"
 
 input int EMA_Fast_Period = 20;
 input int EMA_Slow_Period = 50;
 input int RSI_Period      = 14;
 
-input double RSI_Buy_Min  = 52.0;
-input double RSI_Sell_Max = 48.0;
+input double RSI_Buy      = 55.0;
+input double RSI_Sell     = 45.0;
+
+input int MinBarsBetweenSignals = 2;
 
 int EMA_Fast_Handle = INVALID_HANDLE;
 int EMA_Slow_Handle = INVALID_HANDLE;
 int RSI_Handle      = INVALID_HANDLE;
+int MACD_Handle     = INVALID_HANDLE;
 
 datetime LastBarTime = 0;
+datetime LastSignalTime = 0;
 
-int State = 0;
-// 0 = waiting for ENTRY
-// 1 = BUY active
-// 2 = SELL active
-// 3 = waiting after SLL
+// 0 = انتظار
+// 1 = BUY
+// -1 = SELL
+int CurrentSignal = 0;
 
-bool EntryShown = false;
-bool SLLShown   = false;
-bool TPShown    = false;
+bool SLL_Shown = false;
+bool TP_Shown  = false;
 
 
 //+------------------------------------------------------------------+
-//| Draw text                                                        |
+//| Draw text on chart                                               |
 //+------------------------------------------------------------------+
-void DrawSignal(string text, datetime t, double price, string id)
+void DrawSignal(string text, datetime time, double price, string id)
 {
-   string name = "SIGNAL_ONLY_" + id + "_" + IntegerToString((int)t);
+   string name =
+      "SIGNAL_" +
+      id +
+      "_" +
+      IntegerToString((int)time);
 
    if(ObjectFind(0,name) >= 0)
       return;
 
-   if(!ObjectCreate(0,name,OBJ_TEXT,0,t,price))
+   if(!ObjectCreate(
+      0,
+      name,
+      OBJ_TEXT,
+      0,
+      time,
+      price))
+   {
       return;
+   }
 
-   ObjectSetString(0,name,OBJPROP_TEXT,text);
-   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,11);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,false);
+   ObjectSetString(
+      0,
+      name,
+      OBJPROP_TEXT,
+      text);
+
+   ObjectSetInteger(
+      0,
+      name,
+      OBJPROP_FONTSIZE,
+      11);
+
+   ObjectSetInteger(
+      0,
+      name,
+      OBJPROP_SELECTABLE,
+      false);
+
+   ObjectSetInteger(
+      0,
+      name,
+      OBJPROP_HIDDEN,
+      false);
 }
 
 
 //+------------------------------------------------------------------+
-//| Get indicator values                                             |
+//| Read indicators                                                  |
 //+------------------------------------------------------------------+
-bool GetValues(
+bool GetIndicators(
    int shift,
-   double &fast,
-   double &slow,
-   double &rsi)
+   double &emaFast,
+   double &emaSlow,
+   double &rsi,
+   double &macdMain,
+   double &macdSignal)
 {
    double a[1];
    double b[1];
    double c[1];
+   double d[1];
+   double e[1];
 
-   if(CopyBuffer(EMA_Fast_Handle,0,shift,1,a) != 1)
+   if(CopyBuffer(
+      EMA_Fast_Handle,
+      0,
+      shift,
+      1,
+      a) != 1)
       return false;
 
-   if(CopyBuffer(EMA_Slow_Handle,0,shift,1,b) != 1)
+   if(CopyBuffer(
+      EMA_Slow_Handle,
+      0,
+      shift,
+      1,
+      b) != 1)
       return false;
 
-   if(CopyBuffer(RSI_Handle,0,shift,1,c) != 1)
+   if(CopyBuffer(
+      RSI_Handle,
+      0,
+      shift,
+      1,
+      c) != 1)
       return false;
 
-   fast = a[0];
-   slow = b[0];
-   rsi  = c[0];
+   if(CopyBuffer(
+      MACD_Handle,
+      0,
+      shift,
+      1,
+      d) != 1)
+      return false;
+
+   if(CopyBuffer(
+      MACD_Handle,
+      1,
+      shift,
+      1,
+      e) != 1)
+      return false;
+
+   emaFast    = a[0];
+   emaSlow    = b[0];
+   rsi        = c[0];
+   macdMain   = d[0];
+   macdSignal = e[0];
 
    return true;
 }
 
 
 //+------------------------------------------------------------------+
-//| Check BUY/SELL entry                                             |
+//| Check whether enough time passed                                 |
 //+------------------------------------------------------------------+
-void CheckEntry()
+bool CanSignal()
 {
-   double fast;
-   double slow;
-   double rsi;
+   if(LastSignalTime == 0)
+      return true;
 
-   if(!GetValues(1,fast,slow,rsi))
-      return;
+   int shift =
+      iBarShift(
+         _Symbol,
+         _Period,
+         LastSignalTime,
+         false);
 
-   double close1 = iClose(_Symbol,_Period,1);
-   double open1  = iOpen(_Symbol,_Period,1);
+   if(shift < 0)
+      return true;
 
-   bool bullishCandle = close1 > open1;
-   bool bearishCandle = close1 < open1;
-
-   bool buy =
-      fast > slow &&
-      close1 > fast &&
-      rsi >= RSI_Buy_Min &&
-      bullishCandle;
-
-   bool sell =
-      fast < slow &&
-      close1 < fast &&
-      rsi <= RSI_Sell_Max &&
-      bearishCandle;
-
-
-   if(buy)
-   {
-      State = 1;
-      EntryShown = true;
-      SLLShown = false;
-      TPShown = false;
-
-      double price =
-         iLow(_Symbol,_Period,1) - 30*_Point;
-
-      DrawSignal(
-         "BUY ENTRY",
-         iTime(_Symbol,_Period,1),
-         price,
-         "BUY_ENTRY"
-      );
-
-      return;
-   }
-
-
-   if(sell)
-   {
-      State = 2;
-      EntryShown = true;
-      SLLShown = false;
-      TPShown = false;
-
-      double price =
-         iHigh(_Symbol,_Period,1) + 30*_Point;
-
-      DrawSignal(
-         "SELL ENTRY",
-         iTime(_Symbol,_Period,1),
-         price,
-         "SELL_ENTRY"
-      );
-   }
+   return shift >= MinBarsBetweenSignals;
 }
 
 
 //+------------------------------------------------------------------+
-//| Check active BUY                                                 |
+//| BUY condition                                                    |
 //+------------------------------------------------------------------+
-void CheckBuy()
+bool BuyCondition()
 {
    double fast;
    double slow;
    double rsi;
+   double macd;
+   double macdSignal;
 
-   if(!GetValues(1,fast,slow,rsi))
+   if(!GetIndicators(
+      1,
+      fast,
+      slow,
+      rsi,
+      macd,
+      macdSignal))
+      return false;
+
+   double closePrice =
+      iClose(
+         _Symbol,
+         _Period,
+         1);
+
+   double openPrice =
+      iOpen(
+         _Symbol,
+         _Period,
+         1);
+
+   bool candleUp =
+      closePrice > openPrice;
+
+   return
+      fast > slow &&
+      closePrice > fast &&
+      rsi >= RSI_Buy &&
+      macd > macdSignal &&
+      candleUp;
+}
+
+
+//+------------------------------------------------------------------+
+//| SELL condition                                                   |
+//+------------------------------------------------------------------+
+bool SellCondition()
+{
+   double fast;
+   double slow;
+   double rsi;
+   double macd;
+   double macdSignal;
+
+   if(!GetIndicators(
+      1,
+      fast,
+      slow,
+      rsi,
+      macd,
+      macdSignal))
+      return false;
+
+   double closePrice =
+      iClose(
+         _Symbol,
+         _Period,
+         1);
+
+   double openPrice =
+      iOpen(
+         _Symbol,
+         _Period,
+         1);
+
+   bool candleDown =
+      closePrice < openPrice;
+
+   return
+      fast < slow &&
+      closePrice < fast &&
+      rsi <= RSI_Sell &&
+      macd < macdSignal &&
+      candleDown;
+}
+
+
+//+------------------------------------------------------------------+
+//| Create BUY entry                                                 |
+//+------------------------------------------------------------------+
+void CreateBuyEntry()
+{
+   if(!CanSignal())
       return;
 
-   double close1 = iClose(_Symbol,_Period,1);
-   double open1  = iOpen(_Symbol,_Period,1);
+   datetime t =
+      iTime(
+         _Symbol,
+         _Period,
+         1);
 
-   bool bearish =
-      close1 < open1;
+   double price =
+      iLow(
+         _Symbol,
+         _Period,
+         1)
+      - 30 * _Point;
 
-   bool trendBroken =
-      close1 < fast;
+   DrawSignal(
+      "BUY ENTRY",
+      t,
+      price,
+      "BUY_ENTRY");
 
-   bool weakRSI =
-      rsi < 50.0;
+   CurrentSignal = 1;
+
+   SLL_Shown = false;
+   TP_Shown  = false;
+
+   LastSignalTime = t;
+}
 
 
-   // SLL condition
-   if(!SLLShown &&
-      bearish &&
-      trendBroken &&
-      weakRSI)
+//+------------------------------------------------------------------+
+//| Create SELL entry                                                |
+//+------------------------------------------------------------------+
+void CreateSellEntry()
+{
+   if(!CanSignal())
+      return;
+
+   datetime t =
+      iTime(
+         _Symbol,
+         _Period,
+         1);
+
+   double price =
+      iHigh(
+         _Symbol,
+         _Period,
+         1)
+      + 30 * _Point;
+
+   DrawSignal(
+      "SELL ENTRY",
+      t,
+      price,
+      "SELL_ENTRY");
+
+   CurrentSignal = -1;
+
+   SLL_Shown = false;
+   TP_Shown  = false;
+
+   LastSignalTime = t;
+}
+
+
+//+------------------------------------------------------------------+
+//| Manage BUY                                                       |
+//+------------------------------------------------------------------+
+void ManageBuy()
+{
+   double fast;
+   double slow;
+   double rsi;
+   double macd;
+   double macdSignal;
+
+   if(!GetIndicators(
+      1,
+      fast,
+      slow,
+      rsi,
+      macd,
+      macdSignal))
+      return;
+
+   double closePrice =
+      iClose(
+         _Symbol,
+         _Period,
+         1);
+
+   double openPrice =
+      iOpen(
+         _Symbol,
+         _Period,
+         1);
+
+   bool candleDown =
+      closePrice < openPrice;
+
+   // Strong reversal against BUY
+   bool reversal =
+      closePrice < fast &&
+      rsi < 50.0 &&
+      macd < macdSignal &&
+      candleDown;
+
+   if(!SLL_Shown && reversal)
    {
-      double price =
-         iHigh(_Symbol,_Period,1) + 50*_Point;
-
       DrawSignal(
          "SLL BAZ",
          iTime(_Symbol,_Period,1),
-         price,
-         "BUY_SLL"
-      );
+         iHigh(_Symbol,_Period,1) + 50*_Point,
+         "BUY_SLL");
 
-      SLLShown = true;
+      SLL_Shown = true;
 
-      // بعد از SLL دیگر TP همان ورود را نمی‌دهیم
-      State = 3;
+      // بعد از SLL، سیگنال قبلی تمام می‌شود
+      CurrentSignal = 0;
 
       return;
    }
 
 
-   // TP condition
-   bool strongMove =
-      close1 > fast &&
+   // Strong profitable BUY condition
+   bool profitCondition =
+      closePrice > fast &&
       fast > slow &&
       rsi >= 60.0 &&
-      bullishCandle();
+      macd > macdSignal;
 
-   if(!TPShown && strongMove)
+   if(!TP_Shown && profitCondition)
    {
-      double price =
-         iHigh(_Symbol,_Period,1) + 50*_Point;
+      // برای جلوگیری از TP بلافاصله روی اولین ENTRY،
+      // فقط وقتی سیگنال از قبل فعال بوده بررسی می‌شود.
+      static int buyBars = 0;
 
-      DrawSignal(
-         "TP BAZ",
-         iTime(_Symbol,_Period,1),
-         price,
-         "BUY_TP"
-      );
+      buyBars++;
 
-      TPShown = true;
-      State = 0;
+      if(buyBars >= 2)
+      {
+         DrawSignal(
+            "TP BAZ",
+            iTime(_Symbol,_Period,1),
+            iHigh(_Symbol,_Period,1) + 50*_Point,
+            "BUY_TP");
+
+         TP_Shown = true;
+         CurrentSignal = 0;
+         buyBars = 0;
+      }
    }
 }
 
 
 //+------------------------------------------------------------------+
-//| Check active SELL                                                |
+//| Manage SELL                                                      |
 //+------------------------------------------------------------------+
-void CheckSell()
+void ManageSell()
 {
    double fast;
    double slow;
    double rsi;
+   double macd;
+   double macdSignal;
 
-   if(!GetValues(1,fast,slow,rsi))
+   if(!GetIndicators(
+      1,
+      fast,
+      slow,
+      rsi,
+      macd,
+      macdSignal))
       return;
 
-   double close1 = iClose(_Symbol,_Period,1);
-   double open1  = iOpen(_Symbol,_Period,1);
+   double closePrice =
+      iClose(
+         _Symbol,
+         _Period,
+         1);
 
-   bool bullish =
-      close1 > open1;
+   double openPrice =
+      iOpen(
+         _Symbol,
+         _Period,
+         1);
 
-   bool trendBroken =
-      close1 > fast;
+   bool candleUp =
+      closePrice > openPrice;
 
-   bool weakRSI =
-      rsi > 50.0;
+   // Strong reversal against SELL
+   bool reversal =
+      closePrice > fast &&
+      rsi > 50.0 &&
+      macd > macdSignal &&
+      candleUp;
 
-
-   // SLL condition
-   if(!SLLShown &&
-      bullish &&
-      trendBroken &&
-      weakRSI)
+   if(!SLL_Shown && reversal)
    {
-      double price =
-         iLow(_Symbol,_Period,1) - 50*_Point;
-
       DrawSignal(
          "SLL BAZ",
          iTime(_Symbol,_Period,1),
-         price,
-         "SELL_SLL"
-      );
+         iLow(_Symbol,_Period,1) - 50*_Point,
+         "SELL_SLL");
 
-      SLLShown = true;
+      SLL_Shown = true;
 
-      State = 3;
+      CurrentSignal = 0;
 
       return;
    }
 
 
-   // TP condition
-   bool strongMove =
-      close1 < fast &&
+   // Strong profitable SELL condition
+   bool profitCondition =
+      closePrice < fast &&
       fast < slow &&
       rsi <= 40.0 &&
-      bearishCandle();
+      macd < macdSignal;
 
-   if(!TPShown && strongMove)
+   if(!TP_Shown && profitCondition)
    {
-      double price =
-         iLow(_Symbol,_Period,1) - 50*_Point;
+      static int sellBars = 0;
 
-      DrawSignal(
-         "TP BAZ",
-         iTime(_Symbol,_Period,1),
-         price,
-         "SELL_TP"
-      );
+      sellBars++;
 
-      TPShown = true;
-      State = 0;
+      if(sellBars >= 2)
+      {
+         DrawSignal(
+            "TP BAZ",
+            iTime(_Symbol,_Period,1),
+            iLow(_Symbol,_Period,1) - 50*_Point,
+            "SELL_TP");
+
+         TP_Shown = true;
+         CurrentSignal = 0;
+         sellBars = 0;
+      }
    }
-}
-
-
-//+------------------------------------------------------------------+
-//| Candle helpers                                                   |
-//+------------------------------------------------------------------+
-bool bullishCandle()
-{
-   return iClose(_Symbol,_Period,1) >
-          iOpen(_Symbol,_Period,1);
-}
-
-
-bool bearishCandle()
-{
-   return iClose(_Symbol,_Period,1) <
-          iOpen(_Symbol,_Period,1);
 }
 
 
@@ -330,8 +520,7 @@ int OnInit()
          EMA_Fast_Period,
          0,
          MODE_EMA,
-         PRICE_CLOSE
-      );
+         PRICE_CLOSE);
 
    EMA_Slow_Handle =
       iMA(
@@ -340,16 +529,23 @@ int OnInit()
          EMA_Slow_Period,
          0,
          MODE_EMA,
-         PRICE_CLOSE
-      );
+         PRICE_CLOSE);
 
    RSI_Handle =
       iRSI(
          _Symbol,
          _Period,
          RSI_Period,
-         PRICE_CLOSE
-      );
+         PRICE_CLOSE);
+
+   MACD_Handle =
+      iMACD(
+         _Symbol,
+         _Period,
+         12,
+         26,
+         9,
+         PRICE_CLOSE);
 
 
    if(EMA_Fast_Handle == INVALID_HANDLE)
@@ -361,10 +557,15 @@ int OnInit()
    if(RSI_Handle == INVALID_HANDLE)
       return INIT_FAILED;
 
+   if(MACD_Handle == INVALID_HANDLE)
+      return INIT_FAILED;
+
 
    LastBarTime =
-      iTime(_Symbol,_Period,0);
-
+      iTime(
+         _Symbol,
+         _Period,
+         0);
 
    return INIT_SUCCEEDED;
 }
@@ -383,6 +584,9 @@ void OnDeinit(const int reason)
 
    if(RSI_Handle != INVALID_HANDLE)
       IndicatorRelease(RSI_Handle);
+
+   if(MACD_Handle != INVALID_HANDLE)
+      IndicatorRelease(MACD_Handle);
 }
 
 
@@ -392,31 +596,93 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    datetime currentBar =
-      iTime(_Symbol,_Period,0);
+      iTime(
+         _Symbol,
+         _Period,
+         0);
 
-   // فقط یک بار در شروع هر کندل جدید
+   // فقط یک بار در هر کندل جدید
    if(currentBar == LastBarTime)
       return;
 
    LastBarTime = currentBar;
 
 
-   if(State == 0)
+   //==============================================================
+   // وقتی هیچ سیگنالی نداریم
+   //==============================================================
+   if(CurrentSignal == 0)
    {
-      CheckEntry();
+      bool buy = BuyCondition();
+      bool sell = SellCondition();
+
+      if(buy && !sell)
+      {
+         CreateBuyEntry();
+         return;
+      }
+
+      if(sell && !buy)
+      {
+         CreateSellEntry();
+         return;
+      }
    }
-   else if(State == 1)
+
+
+   //==============================================================
+   // BUY فعال
+   //==============================================================
+   if(CurrentSignal == 1)
    {
-      CheckBuy();
+      // اگر بازار واقعاً SELL شد، اول SLL
+      if(SellCondition())
+      {
+         if(!SLL_Shown)
+         {
+            DrawSignal(
+               "SLL BAZ",
+               iTime(_Symbol,_Period,1),
+               iHigh(_Symbol,_Period,1) + 50*_Point,
+               "BUY_SLL_REVERSAL");
+
+            SLL_Shown = true;
+         }
+
+         CurrentSignal = 0;
+         return;
+      }
+
+      ManageBuy();
+      return;
    }
-   else if(State == 2)
+
+
+   //==============================================================
+   // SELL فعال
+   //==============================================================
+   if(CurrentSignal == -1)
    {
-      CheckSell();
-   }
-   else if(State == 3)
-   {
-      // بعد از SLL منتظر ENTRY جدید می‌ماند
-      State = 0;
+      // اگر بازار واقعاً BUY شد، اول SLL
+      if(BuyCondition())
+      {
+         if(!SLL_Shown)
+         {
+            DrawSignal(
+               "SLL BAZ",
+               iTime(_Symbol,_Period,1),
+               iLow(_Symbol,_Period,1) - 50*_Point,
+               "SELL_SLL_REVERSAL");
+
+            SLL_Shown = true;
+         }
+
+         CurrentSignal = 0;
+         return;
+      }
+
+      ManageSell();
+      return;
    }
 }
 //+------------------------------------------------------------------+
